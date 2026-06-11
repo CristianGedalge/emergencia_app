@@ -226,8 +226,8 @@ class ApiService {
     required String descripcion,
     required double latitud,
     required double longitud,
-    required List<int> fotoBytes,
-    required String fotoFilename,
+    required List<List<int>> fotosBytes,
+    required List<String> fotosFilenames,
   }) async {
     final token = await SessionService.instance.readToken();
     if (token == null || token.isEmpty) {
@@ -239,13 +239,15 @@ class ApiService {
     req.fields['descripcion'] = descripcion;
     req.fields['latitud'] = '$latitud';
     req.fields['longitud'] = '$longitud';
-    req.files.add(
-      http.MultipartFile.fromBytes(
-        'fotos',
-        fotoBytes,
-        filename: fotoFilename,
-      ),
-    );
+    for (int i = 0; i < fotosBytes.length; i++) {
+      req.files.add(
+        http.MultipartFile.fromBytes(
+          'fotos',
+          fotosBytes[i],
+          filename: fotosFilenames[i],
+        ),
+      );
+    }
 
     http.StreamedResponse streamed;
     try {
@@ -339,9 +341,17 @@ class ApiService {
             );
           }
         }
-        final map = maps.first;
+        // Si no encontró ninguno activo en la lista, retorna null
+        return null;
+      }
+
+      final map = Map<String, dynamic>.from(decoded as Map);
+      final solSingle = SolicitudAuxilio.fromJson(map);
+      if (solSingle.estado == EstadoSolicitud.asignado ||
+          solSingle.estado == EstadoSolicitud.enCamino ||
+          solSingle.estado == EstadoSolicitud.enSitio) {
         return SolicitudAuxilioVm(
-          solicitud: SolicitudAuxilio.fromJson(map),
+          solicitud: solSingle,
           tallerId: map['taller_id'] as int?,
           mecanicoId: map['mecanico_id'] as int?,
           tallerNombreAsignado: (map['taller_nombre_asignado'] ?? map['taller_nombre']) as String?,
@@ -351,18 +361,8 @@ class ApiService {
           clienteTelefono: map['cliente_telefono'] as String?,
         );
       }
+      return null;
 
-      final map = Map<String, dynamic>.from(decoded as Map);
-      return SolicitudAuxilioVm(
-        solicitud: SolicitudAuxilio.fromJson(map),
-        tallerId: map['taller_id'] as int?,
-        mecanicoId: map['mecanico_id'] as int?,
-        tallerNombreAsignado: (map['taller_nombre_asignado'] ?? map['taller_nombre']) as String?,
-        mecanicoNombre: (map['mecanico_nombre'] ?? map['nombre_mecanico']) as String?,
-        mecanicoTelefono: (map['mecanico_telefono'] ?? map['telefono_mecanico']) as String?,
-        clienteNombre: (map['cliente_nombre'] ?? map['nombre_cliente']) as String?,
-        clienteTelefono: map['cliente_telefono'] as String?,
-      );
     } on TimeoutException {
       throw ApiException('Tiempo agotado al consultar el servicio asignado.');
     }

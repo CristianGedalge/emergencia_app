@@ -213,6 +213,35 @@ class _DetalleBody extends StatelessWidget {
     }
   }
 
+  Future<void> _cancelarSolicitud(BuildContext context) async {
+    final conf = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('Cancelar Servicio'),
+        content: const Text('¿Estás seguro de que deseas cancelar la solicitud o rechazar el presupuesto?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('No, mantener')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Theme.of(context).colorScheme.error),
+            onPressed: () => Navigator.pop(c, true), 
+            child: const Text('Sí, Cancelar')
+          ),
+        ],
+      )
+    );
+    if (conf != true || !context.mounted) return;
+
+    try {
+      await solicitudesRepository().cancelarSolicitud(vm.solicitud.id);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Solicitud cancelada exitosamente')));
+        Navigator.pop(context); // Volver a la pantalla anterior
+      }
+    } catch (e) {
+      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final s = vm.solicitud;
@@ -265,14 +294,17 @@ class _DetalleBody extends StatelessWidget {
           if (vm.tallerNombreAsignado != null)
             ListTile(
               title: const Text('Taller asignado'),
-              subtitle: Text(
-                '${vm.tallerNombreAsignado} (tabla asignacion_auxilio en servidor)',
-              ),
+              subtitle: Text('${vm.tallerNombreAsignado}'),
             ),
-          if (vm.mecanicoId != null)
+          if (vm.mecanicoNombre != null && vm.mecanicoNombre!.trim().isNotEmpty)
             ListTile(
               title: const Text('Mecánico asignado'),
-              subtitle: Text('ID #${vm.mecanicoId}'),
+              subtitle: Text('${vm.mecanicoNombre}'),
+            )
+          else if (vm.mecanicoId != null)
+            ListTile(
+              title: const Text('Mecánico asignado'),
+              subtitle: const Text('Asignado (sin nombre)'),
             ),
           if (_muestraSeguimientoClienteMecanico(vm))
             Card(
@@ -355,27 +387,37 @@ class _DetalleBody extends StatelessWidget {
                 );
               },
             )
-          else
-            FutureBuilder<Pago?>(
-              future: solicitudesRepository().pagoDeSolicitud(s.id),
-              builder: (context, snap) {
-                final p = snap.data;
-                if (p == null) {
-                  return const Text('Sin datos de pago (API no conectada).');
-                }
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    ListTile(
-                      title: const Text('monto / metodo_pago / estado_pago'),
-                      subtitle: Text(
-                        '${p.monto} · ${p.metodoPago.valorApi} · ${p.estadoPago.valorApi}',
-                      ),
-                    ),
-                  ],
-                );
-              },
+          else ...[
+            if (s.precioEstimado != null)
+              ListTile(
+                leading: const Icon(Icons.attach_money),
+                title: const Text('Precio Estimado'),
+                subtitle: Text('${s.precioEstimado!.toStringAsFixed(2)} Bs'),
+              ),
+            if (s.precioFinal != null)
+              ListTile(
+                leading: const Icon(Icons.check_circle_outline, color: Colors.green),
+                title: const Text('Precio Final / Cobro'),
+                subtitle: Text('${s.precioFinal!.toStringAsFixed(2)} Bs'),
+              ),
+            if (s.precioEstimado == null && s.precioFinal == null)
+              const Padding(
+                padding: EdgeInsets.only(top: 8.0, left: 16.0),
+                child: Text('El mecánico aún no ha registrado el cobro o estimado.', style: TextStyle(color: Colors.grey)),
+              ),
+          ],
+
+          if (s.estado != EstadoSolicitud.finalizado && s.estado != EstadoSolicitud.cancelado)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 8),
+              child: FilledButton.icon(
+                style: FilledButton.styleFrom(backgroundColor: Theme.of(context).colorScheme.error),
+                onPressed: () => _cancelarSolicitud(context),
+                icon: const Icon(Icons.cancel_outlined),
+                label: const Text('Cancelar Servicio / Rechazar'),
+              ),
             ),
+            
           if (ApiConfig.effectiveMockData && s.estado == EstadoSolicitud.finalizado) ...[
             const Divider(height: 32),
             Text('Calificá el servicio', style: Theme.of(context).textTheme.titleMedium),

@@ -208,7 +208,7 @@ class _InicioApiData {
   final int vehiculosActivos;
 }
 
-class _InicioApiBody extends StatelessWidget {
+class _InicioApiBody extends StatefulWidget {
   const _InicioApiBody({
     required this.clienteId,
     required this.nombre,
@@ -229,11 +229,16 @@ class _InicioApiBody extends StatelessWidget {
   final VoidCallback onIrHistorial;
   final SolicitudAuxilioVm? Function(List<SolicitudAuxilioVm>) pedidoActivoResolver;
 
+  @override
+  State<_InicioApiBody> createState() => _InicioApiBodyState();
+}
+
+class _InicioApiBodyState extends State<_InicioApiBody> {
   Future<_InicioApiData> _cargar() async {
-    final vehiculos = await vehiculosRepository().listarPorCliente(clienteId);
+    final vehiculos = await vehiculosRepository().listarPorCliente(widget.clienteId);
     List<SolicitudAuxilioVm> solicitudes;
     try {
-      solicitudes = await solicitudesRepository().listarPorCliente(clienteId);
+      solicitudes = await solicitudesRepository().listarPorCliente(widget.clienteId);
     } catch (_) {
       solicitudes = const [];
     }
@@ -256,19 +261,23 @@ class _InicioApiBody extends StatelessWidget {
         final data = snap.data;
         final solicitudes = data?.solicitudes ?? const <SolicitudAuxilioVm>[];
         final vehiculosActivos = data?.vehiculosActivos ?? 0;
-        final activa = pedidoActivoResolver(solicitudes);
+        final activa = widget.pedidoActivoResolver(solicitudes);
         final historial = solicitudes
             .where((vm) => activa == null || vm.solicitud.id != activa.solicitud.id)
             .toList();
         final puedePedir = vehiculosActivos > 0;
 
-        return ListView(
-          padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
-          children: [
-            Text(
-              'Hola, $nombre',
-              style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
-            ),
+        return RefreshIndicator(
+          onRefresh: () async {
+            setState(() {});
+          },
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
+            children: [
+              Text(
+                'Hola, ${widget.nombre}',
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
+              ),
             const SizedBox(height: 4),
             Text(
               '¿Necesitás auxilio en ruta?',
@@ -279,14 +288,14 @@ class _InicioApiBody extends StatelessWidget {
             const SizedBox(height: 20),
             FilledButton.icon(
               onPressed: puedePedir
-                  ? onPedirAuxilio
+                  ? widget.onPedirAuxilio
                   : () {
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
                           content: Text('Primero agregá un vehículo en la pestaña Vehículos.'),
                         ),
                       );
-                      onIrVehiculos();
+                      widget.onIrVehiculos();
                     },
               icon: const Icon(Icons.emergency_share_rounded, size: 26),
               style: FilledButton.styleFrom(
@@ -301,18 +310,19 @@ class _InicioApiBody extends StatelessWidget {
               const SizedBox(height: 8),
               _TarjetaPedidoActivo(
                 vm: activa,
-                clienteId: clienteId,
+                clienteId: widget.clienteId,
                 onVerDetalle: () async {
                   await Navigator.of(context).push(
                     MaterialPageRoute<void>(
                       builder: (_) => EmergenciaDetalleScreen(
-                        clienteId: clienteId,
+                        clienteId: widget.clienteId,
                         solicitudId: activa.solicitud.id,
                       ),
                     ),
                   );
+                  if (mounted) setState(() {});
                 },
-                onSeguimiento: onIrSeguimiento,
+                onSeguimiento: widget.onIrSeguimiento,
               ),
               const SizedBox(height: 24),
             ] else
@@ -332,11 +342,12 @@ class _InicioApiBody extends StatelessWidget {
                       await Navigator.of(context).push(
                         MaterialPageRoute<void>(
                           builder: (_) => EmergenciaDetalleScreen(
-                            clienteId: clienteId,
+                            clienteId: widget.clienteId,
                             solicitudId: vm.solicitud.id,
                           ),
                         ),
                       );
+                      if (mounted) setState(() {});
                     },
                   ),
                 ),
@@ -349,23 +360,23 @@ class _InicioApiBody extends StatelessWidget {
               icon: Icons.map_outlined,
               title: 'Talleres cercanos',
               subtitle: 'Mapa y teléfonos',
-              onTap: onIrTalleres,
+              onTap: widget.onIrTalleres,
             ),
             _QuickTile(
               icon: Icons.directions_car_outlined,
               title: 'Mis vehículos',
               subtitle: '$vehiculosActivos registrado${vehiculosActivos == 1 ? '' : 's'}',
-              onTap: onIrVehiculos,
+              onTap: widget.onIrVehiculos,
             ),
 
             _QuickTile(
               icon: Icons.history_outlined,
               title: 'Historial',
               subtitle: 'Servicios finalizados',
-              onTap: onIrHistorial,
+              onTap: widget.onIrHistorial,
             ),
           ],
-        );
+        ));
       },
     );
   }

@@ -65,7 +65,7 @@ class StripeService {
       
       final body = jsonEncode({
         'solicitud_id': solicitudId,
-        'cobros_extra': cobrosExtra,
+        'monto_pagar': 0.0,
       });
 
       final res = await http.post(url, headers: headers, body: body);

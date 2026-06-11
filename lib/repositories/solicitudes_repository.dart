@@ -3,7 +3,6 @@ import 'dart:convert';
 import '../config/api_config.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/calificacion_servicio.dart';
-import '../models/cobro_extra_linea.dart';
 import '../models/pago.dart';
 import '../models/solicitud_auxilio.dart';
 import '../mock/mock_data_store.dart';
@@ -20,8 +19,8 @@ abstract class SolicitudesRepository {
     required double longitud,
     String? urlImg,
     String? urlAudio,
-    List<int>? fotoBytes,
-    String? fotoFilename,
+    List<List<int>>? fotosBytes,
+    List<String>? fotosFilenames,
   });
   void demoAvanzarEstado(int solicitudId);
   Future<Pago?> pagoDeSolicitud(int solicitudId);
@@ -31,15 +30,9 @@ abstract class SolicitudesRepository {
     required MetodoPago metodo,
   });
   Future<Pago?> completarPago(int solicitudId);
+  Future<void> cancelarSolicitud(int solicitudId);
 
-  List<CobroExtraLinea> lineasExtraCobro(int solicitudId);
-  Future<void> agregarLineaExtraCobro({
-    required int solicitudId,
-    required String concepto,
-    required double monto,
-  });
-  Future<bool> eliminarLineaExtraCobro({required int solicitudId, required int lineaId});
-  double montoTotalSugeridoCobro(SolicitudAuxilio solicitud);
+
 
   CalificacionServicio? calificacionDeSolicitud(int solicitudId);
   Future<void> registrarCalificacion({
@@ -72,8 +65,8 @@ class _SolicitudesRepositoryMock implements SolicitudesRepository {
     required double longitud,
     String? urlImg,
     String? urlAudio,
-    List<int>? fotoBytes,
-    String? fotoFilename,
+    List<List<int>>? fotosBytes,
+    List<String>? fotosFilenames,
   }) {
     return _store.crearSolicitud(
       clienteId: clienteId,
@@ -111,25 +104,11 @@ class _SolicitudesRepositoryMock implements SolicitudesRepository {
       _store.marcarPagoCompletado(solicitudId);
 
   @override
-  List<CobroExtraLinea> lineasExtraCobro(int solicitudId) =>
-      _store.lineasExtraCobro(solicitudId);
-
-  @override
-  Future<void> agregarLineaExtraCobro({
-    required int solicitudId,
-    required String concepto,
-    required double monto,
-  }) async {
-    _store.agregarLineaExtraCobro(solicitudId, concepto: concepto, monto: monto);
+  Future<void> cancelarSolicitud(int solicitudId) async {
+    // Para modo mock simplemente no hace nada complejo o cambia el estado local.
   }
 
-  @override
-  Future<bool> eliminarLineaExtraCobro({required int solicitudId, required int lineaId}) async =>
-      _store.eliminarLineaExtraCobro(solicitudId, lineaId);
 
-  @override
-  double montoTotalSugeridoCobro(SolicitudAuxilio solicitud) =>
-      _store.montoTotalSugeridoCobro(solicitud);
 
   @override
   CalificacionServicio? calificacionDeSolicitud(int solicitudId) =>
@@ -248,10 +227,10 @@ class _SolicitudesRepositoryApi implements SolicitudesRepository {
     required double longitud,
     String? urlImg,
     String? urlAudio,
-    List<int>? fotoBytes,
-    String? fotoFilename,
+    List<List<int>>? fotosBytes,
+    List<String>? fotosFilenames,
   }) async {
-    if (fotoBytes == null || fotoBytes.isEmpty) {
+    if (fotosBytes == null || fotosBytes.isEmpty) {
       throw ApiException('El backend actual requiere al menos una foto para crear solicitud.');
     }
     final desc = (descripcion ?? '').trim();
@@ -263,8 +242,8 @@ class _SolicitudesRepositoryApi implements SolicitudesRepository {
       descripcion: desc,
       latitud: latitud,
       longitud: longitud,
-      fotoBytes: fotoBytes,
-      fotoFilename: fotoFilename ?? 'foto.jpg',
+      fotosBytes: fotosBytes,
+      fotosFilenames: fotosFilenames ?? fotosBytes.map((_) => 'foto.jpg').toList(),
     );
     _upsertLocal(vm);
     return vm;
@@ -276,18 +255,14 @@ class _SolicitudesRepositoryApi implements SolicitudesRepository {
   @override
   Future<Pago?> pagoDeSolicitud(int solicitudId) async => null;
 
-  final Map<int, List<CobroExtraLinea>> _cobrosExtra = {};
-
   @override
   Future<Pago> registrarPago({
     required int solicitudId,
     required double monto,
     required MetodoPago metodo,
   }) async {
-    final extras = _cobrosExtra[solicitudId] ?? [];
-    
     final payload = {
-      "cobros_extra": extras.map((e) => {"concepto": e.concepto, "monto": e.monto}).toList(),
+      "precio_final": monto,
       "metodo_pago": metodo.name.toUpperCase(),
     };
     
@@ -310,29 +285,31 @@ class _SolicitudesRepositoryApi implements SolicitudesRepository {
   Future<Pago?> completarPago(int solicitudId) async => null;
 
   @override
-  List<CobroExtraLinea> lineasExtraCobro(int solicitudId) => _cobrosExtra[solicitudId] ?? [];
-
-  @override
-  Future<void> agregarLineaExtraCobro({
-    required int solicitudId,
-    required String concepto,
-    required double monto,
-  }) async {
-    final linea = CobroExtraLinea(id: DateTime.now().millisecondsSinceEpoch, solicitudId: solicitudId, concepto: concepto, monto: monto);
-    _cobrosExtra.putIfAbsent(solicitudId, () => []).add(linea);
+  Future<void> cancelarSolicitud(int solicitudId) async {
+    final res = await ApiService.instance.post('/solicitudes/$solicitudId/cancelar', {});
+    if (res.statusCode >= 200 && res.statusCode < 300) {
+      final map = jsonDecode(res.body) as Map<String, dynamic>;
+      final sol = SolicitudAuxilio.fromJson(map);
+      
+      // Update cache
+      final index = _creadasEnSesion.indexWhere((vm) => vm.solicitud.id == solicitudId);
+      if (index != -1) {
+        final currentVm = _creadasEnSesion[index];
+        final updatedVm = SolicitudAuxilioVm(
+          solicitud: sol,
+          mecanicoId: currentVm.mecanicoId,
+          tallerNombreAsignado: currentVm.tallerNombreAsignado,
+          mecanicoNombre: currentVm.mecanicoNombre,
+          mecanicoTelefono: currentVm.mecanicoTelefono,
+          clienteNombre: currentVm.clienteNombre,
+          clienteTelefono: currentVm.clienteTelefono,
+        );
+        _upsertLocal(updatedVm);
+      }
+    } else {
+      throw Exception('Error al cancelar la solicitud: ${res.statusCode} - ${res.body}');
+    }
   }
-
-  @override
-  Future<bool> eliminarLineaExtraCobro({
-    required int solicitudId,
-    required int lineaId,
-  }) async {
-    if (!_cobrosExtra.containsKey(solicitudId)) return false;
-    _cobrosExtra[solicitudId]!.removeWhere((l) => l.id == lineaId);
-    return true;
-  }
-  @override
-  double montoTotalSugeridoCobro(SolicitudAuxilio solicitud) => 0;
 
   @override
   CalificacionServicio? calificacionDeSolicitud(int solicitudId) => null;

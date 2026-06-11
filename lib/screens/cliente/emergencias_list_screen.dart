@@ -181,6 +181,45 @@ class _EmergenciasListScreenState extends State<EmergenciasListScreen> {
                         ),
                       ],
                     ),
+                  if (vm.mecanicoNombre != null && vm.mecanicoNombre!.trim().isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        Icon(Icons.build_circle_outlined, size: 18, color: scheme.onSurfaceVariant),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            'Mecánico: ${vm.mecanicoNombre}',
+                            style: Theme.of(context).textTheme.bodyMedium,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                  if (s.precioEstimado != null || s.precioFinal != null) ...[
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        Icon(Icons.attach_money, size: 18, color: scheme.onSurfaceVariant),
+                        const SizedBox(width: 6),
+                        if (s.precioEstimado != null)
+                          Text(
+                            'Est: ${s.precioEstimado!.toStringAsFixed(2)} Bs',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        if (s.precioFinal != null) ...[
+                          if (s.precioEstimado != null) const SizedBox(width: 12),
+                          Text(
+                            'Final: ${s.precioFinal!.toStringAsFixed(2)} Bs',
+                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              fontWeight: FontWeight.bold,
+                              color: scheme.primary,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ],
                   if (s.descripcion != null && s.descripcion!.trim().isNotEmpty) ...[
                     const SizedBox(height: 8),
                     Text(

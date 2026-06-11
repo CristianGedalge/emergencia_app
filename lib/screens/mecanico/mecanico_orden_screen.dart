@@ -7,8 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
-import 'package:flutter_polyline_points/flutter_polyline_points.dart';
-import 'package:http/http.dart' as http;
+
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/io.dart';
 import 'dart:io' as io;
@@ -21,9 +20,9 @@ import '../../models/solicitud_auxilio.dart';
 import '../../repositories/solicitudes_repository.dart';
 import '../../utils/geo.dart';
 import '../../utils/marker_utils.dart';
-import '../../utils/tarifa_auxilio.dart';
 import '../../utils/telefono_launch.dart';
-import '../../widgets/cobro_desglose_mock_card.dart';
+
+import '../../services/directions_service.dart';
 
 /// Detalle de orden + cobro por distancia (QR o efectivo).
 class MecanicoOrdenScreen extends StatefulWidget {
@@ -51,6 +50,8 @@ class _MecanicoOrdenScreenState extends State<MecanicoOrdenScreen> {
   Future<SolicitudAuxilioVm?>? _apiServicioFuture;
 
   LatLng? _mecanicoPos;
+  String? _etaDistancia;
+  String? _etaTiempo;
   List<LatLng> _routePoints = [];
   BitmapDescriptor _mecanicoIcon = BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen);
   WebSocketChannel? _channel;
@@ -87,9 +88,46 @@ class _MecanicoOrdenScreenState extends State<MecanicoOrdenScreen> {
       io.WebSocket.connect(uriStr).then((ws) {
         _channel = IOWebSocketChannel(ws);
         _wsSub = _channel!.stream.listen(
-          (msg) => debugPrint("WS Mecanico msg: $msg"),
-          onError: (err) => debugPrint("WS Mecanico err: $err"),
-          onDone: () => debugPrint("WS Mecanico stream done"),
+          (msg) {
+            debugPrint("WS Mecanico msg: $msg");
+            try {
+              final parsed = jsonDecode(msg);
+              if (parsed['evento'] == 'SOLICITUD_CANCELADA') {
+                final idCancelada = parsed['datos']['solicitud_id'];
+                if (idCancelada == widget.solicitudId) {
+                  if (mounted) {
+                    showDialog(
+                      context: context,
+                      barrierDismissible: false,
+                      builder: (c) => AlertDialog(
+                        title: const Text('Servicio Cancelado', style: TextStyle(color: Colors.red)),
+                        content: const Text('El cliente ha cancelado la solicitud o rechazado el presupuesto. Ya puedes tomar otra emergencia.'),
+                        actions: [
+                          FilledButton(
+                            onPressed: () {
+                              Navigator.pop(c); // Cerrar dialog
+                              Navigator.pop(context); // Cerrar pantalla orden
+                            },
+                            child: const Text('Entendido')
+                          )
+                        ],
+                      )
+                    );
+                  }
+                }
+              }
+            } catch (e) {
+              debugPrint("WS Msg Parse Error: $e");
+            }
+          },
+          onError: (err) {
+            debugPrint("WS Mecanico err: $err");
+            _channel = null;
+          },
+          onDone: () {
+            debugPrint("WS Mecanico stream done (Desconectado del servidor)");
+            _channel = null;
+          },
         );
       }).catchError((e) {
         debugPrint("WS Mecanico CONNECT ERROR: $e");
@@ -127,32 +165,43 @@ class _MecanicoOrdenScreenState extends State<MecanicoOrdenScreen> {
           _mecanicoPos = aqui;
         });
       }
-      _cargarRutaOSRM(aqui, LatLng(s.latitud, s.longitud));
+      _cargarRutaGoogle(aqui, LatLng(s.latitud, s.longitud));
     } catch (_) {}
   }
 
-  Future<void> _cargarRutaOSRM(LatLng origen, LatLng destino) async {
-    final url = 'https://maps.googleapis.com/maps/api/directions/json?origin=${origen.latitude},${origen.longitude}&destination=${destino.latitude},${destino.longitude}&key=AIzaSyCfif_NZC8wwhsuqHPV4xFim_bSCDVFqW8';
-    try {
-      final response = await http.get(Uri.parse(url));
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        final routes = data['routes'] as List;
-        if (routes.isNotEmpty) {
-          final encoded = routes[0]['overview_polyline']['points'] as String;
-          final decoded = PolylinePoints.decodePolyline(encoded);
-          final pts = decoded.map((p) => LatLng(p.latitude, p.longitude)).toList();
-          if (mounted) {
-            setState(() {
-              _routePoints = pts;
-              if (_mapController != null && pts.isNotEmpty) {
-                // Optional: bounds calculation to fit route could go here.
-              }
-            });
-          }
-        }
-      }
-    } catch (_) {}
+  Future<void> _cargarRutaGoogle(LatLng origen, LatLng destino) async {
+    final route = await DirectionsService.instance.getRoute(origen, destino);
+    if (route != null && mounted) {
+      setState(() {
+        _routePoints = route.polylinePoints;
+        _etaDistancia = route.distance;
+        _etaTiempo = route.duration;
+      });
+      _ajustarCamaraRuta(route.polylinePoints);
+    }
+  }
+
+  void _ajustarCamaraRuta(List<LatLng> points) {
+    if (_mapController == null || points.isEmpty) return;
+    double minLat = points.first.latitude;
+    double maxLat = points.first.latitude;
+    double minLng = points.first.longitude;
+    double maxLng = points.first.longitude;
+    for (final p in points) {
+      if (p.latitude < minLat) minLat = p.latitude;
+      if (p.latitude > maxLat) maxLat = p.latitude;
+      if (p.longitude < minLng) minLng = p.longitude;
+      if (p.longitude > maxLng) maxLng = p.longitude;
+    }
+    _mapController!.animateCamera(
+      CameraUpdate.newLatLngBounds(
+        LatLngBounds(
+          southwest: LatLng(minLat, minLng),
+          northeast: LatLng(maxLat, maxLng),
+        ),
+        60.0,
+      ),
+    );
   }
 
   void _iniciarRastreoReal(SolicitudAuxilio s, int clienteId, int? tallerId) async {
@@ -172,7 +221,7 @@ class _MecanicoOrdenScreenState extends State<MecanicoOrdenScreen> {
         });
       }
       _enviarUbicacionWs(posIni.latitude, posIni.longitude, clienteId, tallerId);
-      _cargarRutaOSRM(aquiIni, LatLng(s.latitud, s.longitud));
+      _cargarRutaGoogle(aquiIni, LatLng(s.latitud, s.longitud));
     } catch (_) {}
 
     _broadcastTimer?.cancel();
@@ -194,7 +243,7 @@ class _MecanicoOrdenScreenState extends State<MecanicoOrdenScreen> {
         _mecanicoPos = aqui;
       });
       _enviarUbicacionWs(pos.latitude, pos.longitude, clienteId, tallerId);
-      _cargarRutaOSRM(aqui, LatLng(s.latitud, s.longitud));
+      _cargarRutaGoogle(aqui, LatLng(s.latitud, s.longitud));
 
       // Auto-arrive check if within 120m (COMENTADO para que el usuario deba apretar el botón manualmente)
       /*
@@ -331,8 +380,7 @@ class _MecanicoOrdenScreenState extends State<MecanicoOrdenScreen> {
   bool _muestraTrayecto(EstadoSolicitud e) =>
       e == EstadoSolicitud.asignado ||
       e == EstadoSolicitud.enCamino ||
-      e == EstadoSolicitud.enSitio ||
-      e == EstadoSolicitud.finalizado;
+      e == EstadoSolicitud.enSitio;
 
   Future<void> _llamarCliente(BuildContext context, String telefono) async {
     try {
@@ -487,6 +535,60 @@ class _MecanicoOrdenScreenState extends State<MecanicoOrdenScreen> {
     );
   }
 
+  Widget _buildGaleriaFotos(BuildContext context, List<String> urls) {
+    if (urls.length == 1) {
+      return _buildFotoCliente(context, urls.first);
+    }
+    return SizedBox(
+      height: 200,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        itemCount: urls.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 8),
+        itemBuilder: (context, i) {
+          final cleanUrl = urls[i].trim();
+          if (cleanUrl.startsWith('http://') || cleanUrl.startsWith('https://')) {
+            return ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: AspectRatio(
+                aspectRatio: 16 / 10,
+                child: Image.network(
+                  cleanUrl,
+                  fit: BoxFit.cover,
+                  loadingBuilder: (context, child, progress) {
+                    if (progress == null) return child;
+                    return Container(
+                      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                      child: const Center(child: CircularProgressIndicator()),
+                    );
+                  },
+                  errorBuilder: (_, __, ___) => Container(
+                    color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                    child: const Center(child: Icon(Icons.broken_image)),
+                  ),
+                ),
+              ),
+            );
+          }
+          return Container(
+            width: 200,
+            padding: const EdgeInsets.all(8),
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(
+              'Foto (Local)\n$cleanUrl',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   bool _pasoCompleto(EstadoSolicitud actual, EstadoSolicitud paso) {
     return _pasosEstado.indexOf(actual) >= _pasosEstado.indexOf(paso);
   }
@@ -546,6 +648,15 @@ class _MecanicoOrdenScreenState extends State<MecanicoOrdenScreen> {
                 ? vm.clienteNombre!.trim()
                 : 'Cliente #${s.clienteId}';
 
+            if (_puedeCobrar(s.estado) && _montoPrecargadoParaSolicitud != s.id) {
+              _montoPrecargadoParaSolicitud = s.id;
+              final t = (s.precioEstimado ?? 0).toStringAsFixed(2);
+              Future<void>.microtask(() {
+                if (!mounted) return;
+                _montoCtrl.text = t;
+              });
+            }
+
             return Stack(
               children: [
                 Positioned.fill(
@@ -579,10 +690,47 @@ class _MecanicoOrdenScreenState extends State<MecanicoOrdenScreen> {
                     },
                   ),
                 ),
+                if (_etaTiempo != null && _etaDistancia != null)
+                  Positioned(
+                    top: 110,
+                    left: 20,
+                    right: 20,
+                    child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: Theme.of(context).colorScheme.primaryContainer,
+                          borderRadius: BorderRadius.circular(16),
+                          boxShadow: [
+                            BoxShadow(color: Colors.black.withValues(alpha: 0.1), blurRadius: 10, offset: const Offset(0, 4)),
+                          ],
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(Icons.directions_car, color: Theme.of(context).colorScheme.onPrimaryContainer),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Llegada en $_etaTiempo',
+                                    style: TextStyle(fontWeight: FontWeight.bold, color: Theme.of(context).colorScheme.onPrimaryContainer, fontSize: 16),
+                                  ),
+                                  Text(
+                                    'Distancia: $_etaDistancia',
+                                    style: TextStyle(color: Theme.of(context).colorScheme.onPrimaryContainer.withValues(alpha: 0.8), fontSize: 13),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                 DraggableScrollableSheet(
-                  initialChildSize: 0.4,
-                  minChildSize: 0.2,
-                  maxChildSize: 0.95,
+                  initialChildSize: _muestraTrayecto(s.estado) ? 0.4 : 1.0,
+                  minChildSize: _muestraTrayecto(s.estado) ? 0.2 : 1.0,
+                  maxChildSize: 1.0,
                   builder: (context, scrollController) {
                     return Container(
                       decoration: BoxDecoration(
@@ -623,6 +771,16 @@ class _MecanicoOrdenScreenState extends State<MecanicoOrdenScreen> {
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Text(nombreCliente, style: Theme.of(context).textTheme.titleMedium),
+                                  if (s.tipoServicioNombre != null && s.tipoServicioNombre!.trim().isNotEmpty) ...[
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      'Servicio: ${s.tipoServicioNombre}',
+                                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                            fontWeight: FontWeight.w600,
+                                            color: Theme.of(context).colorScheme.primary,
+                                          ),
+                                    ),
+                                  ],
                                   if (s.vehiculoPlaca != null && s.vehiculoPlaca!.trim().isNotEmpty) ...[
                                     const SizedBox(height: 4),
                                     Text(
@@ -648,8 +806,15 @@ class _MecanicoOrdenScreenState extends State<MecanicoOrdenScreen> {
                                         : 'Sin descripción registrada.',
                                     style: Theme.of(context).textTheme.bodyMedium,
                                   ),
-                                  if (s.urlImg != null && s.urlImg!.trim().isNotEmpty) ...[
+                                  if (s.urlsFotos != null && s.urlsFotos!.isNotEmpty) ...[
                                     const SizedBox(height: 14),
+                                    Text('Fotos adjuntas:', style: Theme.of(context).textTheme.bodySmall?.copyWith(fontWeight: FontWeight.bold, color: Theme.of(context).colorScheme.outline)),
+                                    const SizedBox(height: 6),
+                                    _buildGaleriaFotos(context, s.urlsFotos!),
+                                  ] else if (s.urlImg != null && s.urlImg!.trim().isNotEmpty) ...[
+                                    const SizedBox(height: 14),
+                                    Text('Foto adjunta:', style: Theme.of(context).textTheme.bodySmall?.copyWith(fontWeight: FontWeight.bold, color: Theme.of(context).colorScheme.outline)),
+                                    const SizedBox(height: 6),
                                     _buildFotoCliente(context, s.urlImg!),
                                   ],
                                   if (vm.clienteTelefono != null && vm.clienteTelefono!.trim().isNotEmpty) ...[
@@ -702,25 +867,49 @@ class _MecanicoOrdenScreenState extends State<MecanicoOrdenScreen> {
                                 children: [
                                   Text('Estado del servicio', style: Theme.of(context).textTheme.titleMedium),
                                   const SizedBox(height: 10),
-                                  for (final paso in _pasosEstado)
-                                    Padding(
-                                      padding: const EdgeInsets.only(bottom: 6),
+                                  if (s.estado == EstadoSolicitud.cancelado)
+                                    Container(
+                                      padding: const EdgeInsets.all(12),
+                                      decoration: BoxDecoration(
+                                        color: Theme.of(context).colorScheme.errorContainer,
+                                        borderRadius: BorderRadius.circular(8),
+                                      ),
                                       child: Row(
                                         children: [
-                                          Icon(
-                                            _pasoCompleto(s.estado, paso)
-                                                ? Icons.check_circle
-                                                : Icons.radio_button_unchecked,
-                                            size: 18,
-                                            color: _pasoCompleto(s.estado, paso)
-                                                ? Theme.of(context).colorScheme.primary
-                                                : Theme.of(context).colorScheme.outline,
-                                          ),
+                                          Icon(Icons.cancel, color: Theme.of(context).colorScheme.error),
                                           const SizedBox(width: 8),
-                                          Text(paso.valorApi),
+                                          Expanded(
+                                            child: Text(
+                                              'Este servicio fue cancelado por el cliente.',
+                                              style: TextStyle(
+                                                color: Theme.of(context).colorScheme.error,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
+                                          ),
                                         ],
                                       ),
-                                    ),
+                                    )
+                                  else
+                                    for (final paso in _pasosEstado)
+                                      Padding(
+                                        padding: const EdgeInsets.only(bottom: 6),
+                                        child: Row(
+                                          children: [
+                                            Icon(
+                                              _pasoCompleto(s.estado, paso)
+                                                  ? Icons.check_circle
+                                                  : Icons.radio_button_unchecked,
+                                              size: 18,
+                                              color: _pasoCompleto(s.estado, paso)
+                                                  ? Theme.of(context).colorScheme.primary
+                                                  : Theme.of(context).colorScheme.outline,
+                                            ),
+                                            const SizedBox(width: 8),
+                                            Text(paso.valorApi),
+                                          ],
+                                        ),
+                                      ),
                                   const SizedBox(height: 14),
                                   if (s.estado == EstadoSolicitud.asignado)
                                     SizedBox(
@@ -754,45 +943,14 @@ class _MecanicoOrdenScreenState extends State<MecanicoOrdenScreen> {
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    Text('Resumen de Cobro Extra', style: Theme.of(context).textTheme.titleMedium),
-                                    const SizedBox(height: 8),
-                                    ...solicitudesRepository().lineasExtraCobro(s.id).map(
-                                      (e) => Row(
-                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                        children: [
-                                          Expanded(child: Text('• ${e.concepto}')),
-                                          Text('${e.monto.toStringAsFixed(2)} Bs'),
-                                          IconButton(
-                                            icon: const Icon(Icons.close, color: Colors.red, size: 18),
-                                            onPressed: () async {
-                                              await solicitudesRepository().eliminarLineaExtraCobro(
-                                                  solicitudId: s.id, lineaId: e.id);
-                                              setState(() {});
-                                            },
-                                          )
-                                        ],
-                                      ),
-                                    ),
-                                    if (s.estado == EstadoSolicitud.enSitio)
-                                      TextButton.icon(
-                                        onPressed: () async {
-                                          await showDialog(
-                                            context: context,
-                                            builder: (_) => _AgregarExtraCobroDialog(solicitudId: s.id),
-                                          );
-                                          setState(() {});
-                                        },
-                                        icon: const Icon(Icons.add),
-                                        label: const Text('Agregar reparación/repuesto'),
-                                      ),
-                                    const SizedBox(height: 16),
-                                    Text('Monto Total Final (Bs)', style: Theme.of(context).textTheme.labelLarge),
+
                                     const SizedBox(height: 8),
                                     TextField(
                                       controller: _montoCtrl,
-                                      decoration: const InputDecoration(
-                                        labelText: 'Ej: 150.00',
-                                        border: OutlineInputBorder(),
+                                      decoration: InputDecoration(
+                                        labelText: 'Monto a cobrar (Bs.)',
+                                        helperText: 'Podés ajustar el precio estimado (${s.precioEstimado?.toStringAsFixed(2) ?? "0.00"} Bs)',
+                                        border: const OutlineInputBorder(),
                                         prefixText: 'Bs ',
                                       ),
                                       keyboardType: const TextInputType.numberWithOptions(decimal: true),
@@ -844,13 +1002,11 @@ class _MecanicoOrdenScreenState extends State<MecanicoOrdenScreen> {
         final s = vm.solicitud;
         final v = MockDataStore.instance.vehiculoPorIdGlobal(s.vehiculoId);
         final vehTxt = v != null ? '${v.marca} ${v.modelo} · ${v.placa}' : 'Vehículo #${s.vehiculoId}';
-        final km = MockDataStore.instance.kilometrosRutaAuxilio(s);
-        final totalSugerido = MockDataStore.instance.montoTotalSugeridoCobro(s);
         final pago = MockDataStore.instance.pagoDeSolicitud(s.id);
 
         if (pago == null && _puedeCobrar(s.estado) && _montoPrecargadoParaSolicitud != s.id) {
           _montoPrecargadoParaSolicitud = s.id;
-          final t = totalSugerido.toStringAsFixed(2);
+          final t = (s.precioEstimado ?? 0).toStringAsFixed(2);
           Future<void>.microtask(() {
             if (!mounted) return;
             _montoCtrl.text = t;
@@ -1009,8 +1165,15 @@ class _MecanicoOrdenScreenState extends State<MecanicoOrdenScreen> {
                                     style: Theme.of(context).textTheme.bodyMedium,
                                   ),
                                 ],
-                                if (s.urlImg != null && s.urlImg!.trim().isNotEmpty) ...[
+                                if (s.urlsFotos != null && s.urlsFotos!.isNotEmpty) ...[
                                   const SizedBox(height: 12),
+                                  Text('Fotos adjuntas:', style: Theme.of(context).textTheme.bodySmall?.copyWith(fontWeight: FontWeight.bold, color: Theme.of(context).colorScheme.outline)),
+                                  const SizedBox(height: 6),
+                                  _buildGaleriaFotos(context, s.urlsFotos!),
+                                ] else if (s.urlImg != null && s.urlImg!.trim().isNotEmpty) ...[
+                                  const SizedBox(height: 12),
+                                  Text('Foto adjunta:', style: Theme.of(context).textTheme.bodySmall?.copyWith(fontWeight: FontWeight.bold, color: Theme.of(context).colorScheme.outline)),
+                                  const SizedBox(height: 6),
                                   _buildFotoCliente(context, s.urlImg!),
                                 ],
                                 if (vm.mecanicoId != null) ...[
@@ -1049,77 +1212,8 @@ class _MecanicoOrdenScreenState extends State<MecanicoOrdenScreen> {
                         ),
                         const Divider(height: 32),
                         if (_muestraTrayecto(s.estado)) ...[
-                          Text('Cobro', style: Theme.of(context).textTheme.titleMedium),
-                          const SizedBox(height: 8),
-                          Text(
-                            'Tarifa trayecto: ${TarifaAuxilio.precioPorKmBs} Bs/km · mínimo ${TarifaAuxilio.minimoBs} Bs · '
-                            'distancia estimada ${km.toStringAsFixed(2)} km.',
-                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                                ),
-                          ),
+                          Text('Cobro Final', style: Theme.of(context).textTheme.titleMedium),
                           const SizedBox(height: 12),
-                          CobroDesgloseMockCard(
-                            solicitud: s,
-                            subtitulo:
-                                'Agregá lo que se reparó o repuestos; el cliente ve el mismo desglose al instante.',
-                            onEliminarLinea: pago == null && _puedeCobrar(s.estado)
-                                ? (lineaId) {
-                                    solicitudesRepository()
-                                        .eliminarLineaExtraCobro(solicitudId: s.id, lineaId: lineaId)
-                                        .then((ok) {
-                                      if (!mounted) return;
-                                      if (ok) {
-                                        HapticFeedback.selectionClick();
-                                        setState(() {
-                                          _montoCtrl.text = MockDataStore.instance
-                                              .montoTotalSugeridoCobro(s)
-                                              .toStringAsFixed(2);
-                                        });
-                                      }
-                                    });
-                                  }
-                                : null,
-                          ),
-                          if (pago == null && _puedeCobrar(s.estado)) ...[
-                            const SizedBox(height: 12),
-                            FilledButton.tonalIcon(
-                              onPressed: _busy
-                                  ? null
-                                  : () async {
-                                      final r = await showDialog<({String concepto, double monto})>(
-                                        context: context,
-                                        builder: (ctx) => _AgregarExtraCobroDialog(solicitudId: s.id),
-                                      );
-                                      if (r == null || !mounted) return;
-                                      try {
-                                        await solicitudesRepository().agregarLineaExtraCobro(
-                                          solicitudId: s.id,
-                                          concepto: r.concepto,
-                                          monto: r.monto,
-                                        );
-                                      } catch (e) {
-                                        if (context.mounted) {
-                                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
-                                        }
-                                        return;
-                                      }
-                                      if (!mounted) return;
-                                      HapticFeedback.lightImpact();
-                                      setState(() {
-                                        _montoCtrl.text =
-                                            MockDataStore.instance.montoTotalSugeridoCobro(s).toStringAsFixed(2);
-                                      });
-                                      if (context.mounted) {
-                                        ScaffoldMessenger.of(context).showSnackBar(
-                                          const SnackBar(content: Text('Línea de cobro agregada')),
-                                        );
-                                      }
-                                    },
-                              icon: const Icon(Icons.add_circle_outline),
-                              label: const Text('Agregar cobro por reparación o repuesto'),
-                            ),
-                          ],
                           const SizedBox(height: 16),
                         ] else
                           Padding(
@@ -1197,7 +1291,7 @@ class _MecanicoOrdenScreenState extends State<MecanicoOrdenScreen> {
                             decoration: InputDecoration(
                               labelText: 'Monto a cobrar (Bs.)',
                               helperText:
-                                  'Total sugerido (trayecto + extras): ${totalSugerido.toStringAsFixed(2)} Bs. Podés ajustarlo.',
+                                  'Podés ajustar el precio estimado (${s.precioEstimado?.toStringAsFixed(2) ?? "0.00"} Bs).',
                               border: const OutlineInputBorder(),
                               prefixText: 'Bs ',
                             ),

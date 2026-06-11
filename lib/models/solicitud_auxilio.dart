@@ -31,12 +31,15 @@ class SolicitudAuxilio {
     this.vehiculoPlaca,
     this.descripcion,
     this.urlImg,
+    this.urlsFotos,
     this.urlAudio,
     required this.latitud,
     required this.longitud,
     required this.estado,
     required this.fechaCreacion,
     this.estadoPago,
+    this.precioEstimado,
+    this.precioFinal,
   });
 
   final int id;
@@ -47,19 +50,25 @@ class SolicitudAuxilio {
   final String? vehiculoPlaca;
   final String? descripcion;
   final String? urlImg;
+  final List<String>? urlsFotos;
   final String? urlAudio;
   final double latitud;
   final double longitud;
   final EstadoSolicitud estado;
   final DateTime fechaCreacion;
   final String? estadoPago;
+  final double? precioEstimado;
+  final double? precioFinal;
 
   factory SolicitudAuxilio.fromJson(Map<String, dynamic> json) {
     final fotos = json['urls_fotos'];
     String? primeraFoto;
+    List<String>? listaFotos;
     if (fotos is List && fotos.isNotEmpty) {
-      final f0 = fotos.first;
-      if (f0 is String) primeraFoto = f0;
+      listaFotos = fotos.whereType<String>().toList();
+      if (listaFotos.isNotEmpty) {
+        primeraFoto = listaFotos.first;
+      }
     }
     return SolicitudAuxilio(
       id: json['id'] as int,
@@ -77,12 +86,15 @@ class SolicitudAuxilio {
               json['placa']) as String?,
       descripcion: json['descripcion'] as String?,
       urlImg: (json['url_img'] as String?) ?? primeraFoto,
+      urlsFotos: listaFotos,
       urlAudio: json['url_audio'] as String?,
       latitud: (json['latitud'] as num).toDouble(),
       longitud: (json['longitud'] as num).toDouble(),
       estado: EstadoSolicitud.desdeString(json['estado'] as String),
-      fechaCreacion: DateTime.parse(json['fecha_creacion'] as String),
+      fechaCreacion: DateTime.tryParse(json['fecha_creacion'] ?? '') ?? DateTime.now(),
       estadoPago: json['estado_pago'] as String?,
+      precioEstimado: (json['precio_estimado'] as num?)?.toDouble(),
+      precioFinal: (json['precio_final'] as num?)?.toDouble(),
     );
   }
 
@@ -95,12 +107,15 @@ class SolicitudAuxilio {
         'vehiculo_placa': vehiculoPlaca,
         'descripcion': descripcion,
         'url_img': urlImg,
+        'urls_fotos': urlsFotos,
         'url_audio': urlAudio,
         'latitud': latitud,
         'longitud': longitud,
         'estado': estado.valorApi,
         'fecha_creacion': fechaCreacion.toIso8601String(),
         'estado_pago': estadoPago,
+        'precio_estimado': precioEstimado,
+        'precio_final': precioFinal,
       };
 
   SolicitudAuxilio copyWith({

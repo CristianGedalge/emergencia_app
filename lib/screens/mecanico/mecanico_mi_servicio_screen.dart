@@ -87,7 +87,10 @@ class _MecanicoMiServicioScreenState extends State<MecanicoMiServicioScreen> {
 
   Widget _bloqueFotoCliente(BuildContext context, SolicitudAuxilio s) {
     final scheme = Theme.of(context).colorScheme;
-    final url = s.urlImg?.trim();
+    final urls = (s.urlsFotos != null && s.urlsFotos!.isNotEmpty) 
+        ? s.urlsFotos! 
+        : (s.urlImg != null && s.urlImg!.trim().isNotEmpty ? [s.urlImg!] : <String>[]);
+        
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -96,53 +99,30 @@ class _MecanicoMiServicioScreenState extends State<MecanicoMiServicioScreen> {
             Icon(Icons.photo_camera_outlined, size: 20, color: scheme.primary),
             const SizedBox(width: 8),
             Text(
-              'Foto del cliente',
+              urls.length > 1 ? 'Fotos del cliente' : 'Foto del cliente',
               style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
             ),
           ],
         ),
         const SizedBox(height: 8),
-        if (url == null || url.isEmpty)
+        if (urls.isEmpty || urls.first.isEmpty)
           Text(
             'En este pedido el cliente no adjuntó foto. Cuando el API guarde una URL pública (HTTPS), se verá acá en miniatura.',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
           )
-        else if (url.startsWith('http://') || url.startsWith('https://'))
-          ClipRRect(
-            borderRadius: BorderRadius.circular(12),
-            child: AspectRatio(
-              aspectRatio: 16 / 10,
-              child: Image.network(
-                url,
-                fit: BoxFit.cover,
-                loadingBuilder: (context, child, progress) {
-                  if (progress == null) return child;
-                  return ColoredBox(
-                    color: scheme.surfaceContainerHighest,
-                    child: const Center(child: CircularProgressIndicator()),
-                  );
-                },
-                errorBuilder: (context, error, stackTrace) => ColoredBox(
-                  color: scheme.surfaceContainerHighest,
-                  child: Center(
-                    child: Padding(
-                      padding: const EdgeInsets.all(12),
-                      child: Text(
-                        'No se pudo cargar la imagen. Revisá la URL o permisos CORS en web.',
-                        textAlign: TextAlign.center,
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          )
+        else if (urls.length == 1)
+          _buildSingleFoto(context, urls.first)
         else
-          Text(
-            'Hay referencia a imagen (demo u archivo local: $url). En producción el backend debe devolver un enlace HTTPS accesible para mostrarla acá.',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+          SizedBox(
+            height: 200,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: urls.length,
+              separatorBuilder: (_, _) => const SizedBox(width: 8),
+              itemBuilder: (context, i) => _buildSingleFoto(context, urls[i], width: 250),
+            ),
           ),
+        
         if (s.urlAudio != null && s.urlAudio!.trim().isNotEmpty) ...[
           const SizedBox(height: 12),
           Row(
@@ -160,6 +140,54 @@ class _MecanicoMiServicioScreenState extends State<MecanicoMiServicioScreen> {
         ],
       ],
     );
+  }
+
+  Widget _buildSingleFoto(BuildContext context, String url, {double? width}) {
+    final scheme = Theme.of(context).colorScheme;
+    final cleanUrl = url.trim();
+    if (cleanUrl.startsWith('http://') || cleanUrl.startsWith('https://')) {
+      return SizedBox(
+        width: width,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(12),
+          child: AspectRatio(
+            aspectRatio: 16 / 10,
+            child: Image.network(
+              cleanUrl,
+              fit: BoxFit.cover,
+              loadingBuilder: (context, child, progress) {
+                if (progress == null) return child;
+                return ColoredBox(
+                  color: scheme.surfaceContainerHighest,
+                  child: const Center(child: CircularProgressIndicator()),
+                );
+              },
+              errorBuilder: (context, error, stackTrace) => ColoredBox(
+                color: scheme.surfaceContainerHighest,
+                child: Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Text(
+                      'No se pudo cargar la imagen. Revisá la URL o permisos CORS en web.',
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    } else {
+      return SizedBox(
+        width: width,
+        child: Text(
+          'Hay referencia a imagen (demo u archivo local: $cleanUrl). En producción el backend debe devolver un enlace HTTPS accesible para mostrarla acá.',
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+        ),
+      );
+    }
   }
 
   SolicitudAuxilioVm? _ordenPrioritaria() {

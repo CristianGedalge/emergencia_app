@@ -32,7 +32,7 @@ class _EmergenciaNuevaScreenState extends State<EmergenciaNuevaScreen> {
 
   int? _vehiculoId;
   List<Vehiculo> _vehiculos = [];
-  XFile? _fotoAdjunta;
+  final List<XFile> _fotosAdjuntas = [];
   bool _busy = false;
   bool _speechDisponible = false;
   bool _dictando = false;
@@ -111,13 +111,13 @@ class _EmergenciaNuevaScreenState extends State<EmergenciaNuevaScreen> {
   Future<void> _tomarFoto() async {
     final img = await _picker.pickImage(source: ImageSource.camera, imageQuality: 75);
     if (img == null) return;
-    setState(() => _fotoAdjunta = img);
+    setState(() => _fotosAdjuntas.add(img));
   }
 
   Future<void> _elegirGaleria() async {
-    final img = await _picker.pickImage(source: ImageSource.gallery, imageQuality: 75);
-    if (img == null) return;
-    setState(() => _fotoAdjunta = img);
+    final imgs = await _picker.pickMultiImage(imageQuality: 75);
+    if (imgs.isEmpty) return;
+    setState(() => _fotosAdjuntas.addAll(imgs));
   }
 
   Future<void> _toggleDictado() async {
@@ -179,7 +179,7 @@ class _EmergenciaNuevaScreenState extends State<EmergenciaNuevaScreen> {
         );
         return;
       }
-      if (_fotoAdjunta == null) {
+      if (_fotosAdjuntas.isEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('En API necesitás adjuntar al menos una foto.')),
         );
@@ -188,8 +188,14 @@ class _EmergenciaNuevaScreenState extends State<EmergenciaNuevaScreen> {
     }
     setState(() => _busy = true);
     try {
-      final urlImg = _fotoAdjunta != null ? 'mock://${_fotoAdjunta!.path}' : null;
-      final fotoBytes = _fotoAdjunta != null ? await _fotoAdjunta!.readAsBytes() : null;
+      final urlImg = _fotosAdjuntas.isNotEmpty ? 'mock://${_fotosAdjuntas.first.path}' : null;
+      final List<List<int>> bytesList = [];
+      final List<String> namesList = [];
+      for (final f in _fotosAdjuntas) {
+        bytesList.add(await f.readAsBytes());
+        namesList.add(f.name);
+      }
+      
       await _solicitudesRepo.crear(
         clienteId: widget.clienteId,
         vehiculoId: _vehiculoId!,
@@ -198,8 +204,8 @@ class _EmergenciaNuevaScreenState extends State<EmergenciaNuevaScreen> {
         longitud: lng,
         urlImg: urlImg,
         urlAudio: null,
-        fotoBytes: fotoBytes,
-        fotoFilename: _fotoAdjunta?.name,
+        fotosBytes: bytesList.isNotEmpty ? bytesList : null,
+        fotosFilenames: namesList.isNotEmpty ? namesList : null,
       );
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -411,10 +417,18 @@ class _EmergenciaNuevaScreenState extends State<EmergenciaNuevaScreen> {
               ),
             ],
           ),
-          if (_fotoAdjunta != null)
+          if (_fotosAdjuntas.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(top: 8),
-              child: Text('Imagen adjunta: ${_fotoAdjunta!.path}', style: Theme.of(context).textTheme.bodySmall),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Imágenes adjuntas (${_fotosAdjuntas.length}):', style: Theme.of(context).textTheme.bodySmall?.copyWith(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 4),
+                  for (final f in _fotosAdjuntas)
+                    Text('• ${f.name}', style: Theme.of(context).textTheme.bodySmall),
+                ],
+              ),
             ),
           const SizedBox(height: 28),
           FilledButton(

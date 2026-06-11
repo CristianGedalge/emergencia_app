@@ -3,11 +3,9 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
-import 'package:flutter_polyline_points/flutter_polyline_points.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/io.dart';
-import 'package:http/http.dart' as http;
 import 'dart:io' as io;
 
 import '../../config/api_config.dart';
@@ -19,6 +17,7 @@ import '../../utils/google_maps_links.dart';
 import '../../utils/telefono_launch.dart';
 import '../../utils/marker_utils.dart';
 import '../../services/stripe_service.dart';
+import '../../services/directions_service.dart';
 import 'cliente_estilos_solicitud.dart';
 
 /// Mapa cliente ↔ mecánico en marcha (MOCK: posición del mecánico simulada; producción: GPS + canal en tiempo real).
@@ -43,6 +42,8 @@ class _ClienteSeguimientoScreenState extends State<ClienteSeguimientoScreen> {
   bool _apiLoading = false;
   String? _apiError;
   LatLng? _mecanicoPos;
+  String? _etaDistancia;
+  String? _etaTiempo;
   List<LatLng> _routePoints = [];
   BitmapDescriptor _mecanicoIcon = BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen);
   GoogleMapController? _mapController;
@@ -51,8 +52,13 @@ class _ClienteSeguimientoScreenState extends State<ClienteSeguimientoScreen> {
   void initState() {
     super.initState();
     _cargarIconoMecanico();
-    MockDataStore.instance.addListener(_onStore);
     if (ApiConfig.effectiveMockData) {
+      final vm = MockDataStore.instance.solicitudSeguimientoPrioritariaCliente(widget.clienteId);
+      if (vm != null) {
+        final mecanico = MockDataStore.instance.posicionMecanicoSimulada(vm.solicitud);
+        final incidente = LatLng(vm.solicitud.latitud, vm.solicitud.longitud);
+        _cargarRutaGoogle(mecanico, incidente);
+      }
       _tick = Timer.periodic(const Duration(milliseconds: 900), (_) {
         if (mounted) setState(() {});
       });
@@ -196,33 +202,52 @@ class _ClienteSeguimientoScreenState extends State<ClienteSeguimientoScreen> {
             _ajustarCamara();
           }
           final inc = _apiVm != null ? LatLng(_apiVm!.solicitud.latitud, _apiVm!.solicitud.longitud) : null;
+          debugPrint("DEBUG: _onWsMessage UBICACION_MECANICO received! inc = $inc");
           if (inc != null) {
-            _cargarRutaOSRM(mPos, inc);
+            _cargarRutaGoogle(mPos, inc);
           }
         }
       }
     } catch (_) {}
   }
 
-  Future<void> _cargarRutaOSRM(LatLng origen, LatLng destino) async {
-    final url = 'https://maps.googleapis.com/maps/api/directions/json?origin=${origen.latitude},${origen.longitude}&destination=${destino.latitude},${destino.longitude}&key=AIzaSyCfif_NZC8wwhsuqHPV4xFim_bSCDVFqW8';
-    try {
-      final response = await http.get(Uri.parse(url));
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        final routes = data['routes'] as List;
-        if (routes.isNotEmpty) {
-          final encoded = routes[0]['overview_polyline']['points'] as String;
-          final decoded = PolylinePoints.decodePolyline(encoded);
-          final pts = decoded.map((p) => LatLng(p.latitude, p.longitude)).toList();
-          if (mounted) {
-            setState(() {
-              _routePoints = pts;
-            });
-          }
-        }
-      }
-    } catch (_) {}
+  Future<void> _cargarRutaGoogle(LatLng origen, LatLng destino) async {
+    debugPrint("DEBUG: _cargarRutaGoogle origin: ${origen.latitude}, ${origen.longitude} destination: ${destino.latitude}, ${destino.longitude}");
+    final route = await DirectionsService.instance.getRoute(origen, destino);
+    if (route != null && mounted) {
+      debugPrint("DEBUG: _cargarRutaGoogle SUCCESS! Distance: ${route.distance}, Time: ${route.duration}");
+      setState(() {
+        _routePoints = route.polylinePoints;
+        _etaDistancia = route.distance;
+        _etaTiempo = route.duration;
+      });
+      _ajustarCamaraRuta(route.polylinePoints);
+    } else {
+      debugPrint("DEBUG: _cargarRutaGoogle FAILED (returned null or not mounted)");
+    }
+  }
+
+  void _ajustarCamaraRuta(List<LatLng> points) {
+    if (_mapController == null || points.isEmpty) return;
+    double minLat = points.first.latitude;
+    double maxLat = points.first.latitude;
+    double minLng = points.first.longitude;
+    double maxLng = points.first.longitude;
+    for (final p in points) {
+      if (p.latitude < minLat) minLat = p.latitude;
+      if (p.latitude > maxLat) maxLat = p.latitude;
+      if (p.longitude < minLng) minLng = p.longitude;
+      if (p.longitude > maxLng) maxLng = p.longitude;
+    }
+    _mapController!.animateCamera(
+      CameraUpdate.newLatLngBounds(
+        LatLngBounds(
+          southwest: LatLng(minLat, minLng),
+          northeast: LatLng(maxLat, maxLng),
+        ),
+        60.0, // padding
+      ),
+    );
   }
 
   Future<void> _refrescarSeguimientoApi({bool silent = false}) async {
@@ -258,7 +283,7 @@ class _ClienteSeguimientoScreenState extends State<ClienteSeguimientoScreen> {
       
       if (_mecanicoPos != null && activa != null) {
         final inc = LatLng(activa.solicitud.latitud, activa.solicitud.longitud);
-        _cargarRutaOSRM(_mecanicoPos!, inc);
+        _cargarRutaGoogle(_mecanicoPos!, inc);
         _ajustarCamara();
       }
     } catch (e) {
@@ -327,6 +352,21 @@ class _ClienteSeguimientoScreenState extends State<ClienteSeguimientoScreen> {
       (mecanico.latitude + incidente.latitude) / 2,
       (mecanico.longitude + incidente.longitude) / 2,
     );
+  }
+
+  String _mensajeEstado(EstadoSolicitud estado) {
+    switch (estado) {
+      case EstadoSolicitud.asignado:
+        return '¡Tu mecánico ya fue asignado!';
+      case EstadoSolicitud.enCamino:
+        return 'El mecánico va en camino hacia tu ubicación.';
+      case EstadoSolicitud.enSitio:
+        return 'El mecánico llegó a tu ubicación.';
+      case EstadoSolicitud.finalizado:
+        return 'El servicio ha finalizado. Por favor procede con el pago.';
+      default:
+        return 'Solicitud aceptada; esperando asignación.';
+    }
   }
 
   @override
@@ -414,9 +454,7 @@ class _ClienteSeguimientoScreenState extends State<ClienteSeguimientoScreen> {
                       style: Theme.of(context).textTheme.titleMedium,
                     ),
                     Text(
-                      _apiVm!.mecanicoId != null
-                          ? '¡Tu mecánico ya fue asignado!'
-                          : 'Solicitud aceptada; esperando asignación.',
+                      _mensajeEstado(_apiVm!.solicitud.estado),
                       style: Theme.of(context).textTheme.bodyMedium,
                     ),
                     if (_apiVm!.mecanicoNombre != null && _apiVm!.mecanicoNombre!.trim().isNotEmpty)
@@ -428,6 +466,16 @@ class _ClienteSeguimientoScreenState extends State<ClienteSeguimientoScreen> {
                         onPressed: () => _llamarMecanico(context, _apiVm!.mecanicoTelefono!),
                         icon: const Icon(Icons.call),
                         label: const Text('Llamar'),
+                      ),
+                    ],
+                    if (_apiVm!.solicitud.precioEstimado != null) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        'Precio Estimado: ${_apiVm!.solicitud.precioEstimado!.toStringAsFixed(2)} Bs',
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                              fontWeight: FontWeight.bold,
+                              color: Theme.of(context).colorScheme.primary,
+                            ),
                       ),
                     ],
                     if (_apiVm!.solicitud.estado == EstadoSolicitud.finalizado) ...[
@@ -460,27 +508,71 @@ class _ClienteSeguimientoScreenState extends State<ClienteSeguimientoScreen> {
               ),
             ),
             Expanded(
-              child: GoogleMap(
-                onMapCreated: (ctrl) {
-                  _mapController = ctrl;
-                  _ajustarCamara();
-                },
-                myLocationEnabled: true,
-                myLocationButtonEnabled: false,
-                initialCameraPosition: CameraPosition(
-                  target: center,
-                  zoom: 13,
-                ),
-                polylines: {
-                  if (_routePoints.isNotEmpty)
-                    Polyline(
-                      polylineId: const PolylineId('route'),
-                      points: _routePoints,
-                      color: Colors.blueAccent,
-                      width: 4,
+              child: Stack(
+                children: [
+                  GoogleMap(
+                    onMapCreated: (ctrl) {
+                      _mapController = ctrl;
+                      _ajustarCamara();
+                      if (_routePoints.isNotEmpty) {
+                        _ajustarCamaraRuta(_routePoints);
+                      }
+                    },
+                    myLocationEnabled: true,
+                    myLocationButtonEnabled: false,
+                    initialCameraPosition: CameraPosition(
+                      target: center,
+                      zoom: 13,
                     ),
-                },
-                markers: markers,
+                    polylines: {
+                      if (_routePoints.isNotEmpty)
+                        Polyline(
+                          polylineId: const PolylineId('route'),
+                          points: _routePoints,
+                          color: Colors.blueAccent,
+                          width: 4,
+                        ),
+                    },
+                    markers: markers,
+                  ),
+                  if (_etaTiempo != null && _etaDistancia != null)
+                    Positioned(
+                      top: 16,
+                      left: 16,
+                      right: 16,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: Theme.of(context).colorScheme.primaryContainer,
+                          borderRadius: BorderRadius.circular(12),
+                          boxShadow: [
+                            BoxShadow(color: Colors.black.withValues(alpha: 0.1), blurRadius: 8, offset: const Offset(0, 4)),
+                          ],
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(Icons.directions_car, color: Theme.of(context).colorScheme.onPrimaryContainer),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Llegada del mecánico en $_etaTiempo',
+                                    style: TextStyle(fontWeight: FontWeight.bold, color: Theme.of(context).colorScheme.onPrimaryContainer, fontSize: 16),
+                                  ),
+                                  Text(
+                                    'Distancia: $_etaDistancia',
+                                    style: TextStyle(color: Theme.of(context).colorScheme.onPrimaryContainer.withValues(alpha: 0.8), fontSize: 13),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                ],
               ),
             ),
           ],
@@ -513,6 +605,7 @@ class _ClienteSeguimientoScreenState extends State<ClienteSeguimientoScreen> {
         final mecanico = MockDataStore.instance.posicionMecanicoSimulada(s);
         final incidente = LatLng(s.latitud, s.longitud);
         final kmMec = distanciaKm(mecanico, incidente);
+
         final markers = <Marker>{
           Marker(
             markerId: const MarkerId('incidente_mock'),
@@ -569,12 +662,63 @@ class _ClienteSeguimientoScreenState extends State<ClienteSeguimientoScreen> {
                 ),
               ),
               Expanded(
-                child: GoogleMap(
-                  initialCameraPosition: CameraPosition(
-                    target: _centro(s, mecanico),
-                    zoom: 13,
-                  ),
-                  markers: markers,
+                child: Stack(
+                  children: [
+                    GoogleMap(
+                      onMapCreated: (ctrl) => _mapController = ctrl,
+                      initialCameraPosition: CameraPosition(
+                        target: _centro(s, mecanico),
+                        zoom: 13,
+                      ),
+                      polylines: {
+                        if (_routePoints.isNotEmpty)
+                          Polyline(
+                            polylineId: const PolylineId('route_mock'),
+                            points: _routePoints,
+                            color: Colors.blueAccent,
+                            width: 4,
+                          ),
+                      },
+                      markers: markers,
+                    ),
+                    if (_etaTiempo != null && _etaDistancia != null)
+                      Positioned(
+                        top: 16,
+                        left: 16,
+                        right: 16,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                          decoration: BoxDecoration(
+                            color: Theme.of(context).colorScheme.primaryContainer,
+                            borderRadius: BorderRadius.circular(12),
+                            boxShadow: [
+                              BoxShadow(color: Colors.black.withValues(alpha: 0.1), blurRadius: 8, offset: const Offset(0, 4)),
+                            ],
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(Icons.directions_car, color: Theme.of(context).colorScheme.onPrimaryContainer),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Llegada del mecánico en $_etaTiempo',
+                                      style: TextStyle(fontWeight: FontWeight.bold, color: Theme.of(context).colorScheme.onPrimaryContainer, fontSize: 16),
+                                    ),
+                                    Text(
+                                      'Distancia: $_etaDistancia',
+                                      style: TextStyle(color: Theme.of(context).colorScheme.onPrimaryContainer.withValues(alpha: 0.8), fontSize: 13),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
               ),
               Padding(
