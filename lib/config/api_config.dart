@@ -23,7 +23,7 @@ class ApiConfig {
     if (_apiBaseEnv.isNotEmpty) return _apiBaseEnv;
     //return 'http://10.5.206.227:8000/api'; // IP de tu PC para el dispositivo físico
     //return 'https://emergeciavehicularapi-production.up.railway.app';
-    return 'http://192.168.100.50:8000/api';
+    return 'http://emergencia-alb-1298699143.us-east-1.elb.amazonaws.com/api';
   }
 
   /// `true` = repositorios en memoria + sesión demo opcional en login.
